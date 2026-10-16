@@ -19,6 +19,7 @@ import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -46,37 +47,109 @@ public class MainActivity extends Activity {
         }
     }
 
-    private Button button(String label, LinearLayout panel, View.OnClickListener listener) {
+    private int dp(int n) {
+        return Math.round(n * getResources().getDisplayMetrics().density);
+    }
+
+    private Button button(String label, LinearLayout group, View.OnClickListener action) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setOnClickListener(listener);
-        panel.addView(b, new LinearLayout.LayoutParams(0, -2, 1));
+        b.setTextSize(15);
+        b.setTextColor(Color.rgb(18, 25, 39));
+        b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(221, 231, 249)));
+        b.setMinHeight(dp(52));
+        b.setMinimumWidth(0);
+        b.setOnClickListener(action);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        p.setMargins(dp(3), dp(4), dp(3), dp(4));
+        group.addView(b, p);
         return b;
     }
 
+    private LinearLayout controlsPanel;
+    private Button showControlsButton;
+
+    private void setControls(boolean expanded) {
+        if (controlsPanel == null || showControlsButton == null) return;
+        controlsPanel.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        showControlsButton.setVisibility(expanded ? View.GONE : View.VISIBLE);
+    }
+
     private void buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(16,18,23));
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        button("Abrir PDF", top, v -> selectFile());
-        button("Modo escuro", top, v -> { dark = !dark; view.invalidate(); });
-        root.addView(top);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.rgb(17, 19, 24));
+
         view = new PdfView();
-        root.addView(view, new LinearLayout.LayoutParams(-1, 0, 1));
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setGravity(Gravity.CENTER);
-        button("◀ Anterior", bottom, v -> changePage(-1));
+        root.addView(view, new FrameLayout.LayoutParams(-1, -1));
+
+        controlsPanel = new LinearLayout(this);
+        controlsPanel.setOrientation(LinearLayout.VERTICAL);
+        controlsPanel.setGravity(Gravity.CENTER);
+        controlsPanel.setPadding(dp(13), dp(16), dp(13), dp(16));
+        android.graphics.drawable.GradientDrawable panelBackground = new android.graphics.drawable.GradientDrawable();
+        panelBackground.setColor(Color.rgb(30, 34, 43));
+        panelBackground.setCornerRadius(dp(18));
+        controlsPanel.setBackground(panelBackground);
+        controlsPanel.setElevation(dp(9));
+
+        TextView title = new TextView(this);
+        title.setText("Leitor PDF Dark");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(20);
+        title.setGravity(Gravity.CENTER);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        controlsPanel.addView(title, new LinearLayout.LayoutParams(-1, dp(40)));
+
+        LinearLayout first = new LinearLayout(this);
+        first.setGravity(Gravity.CENTER);
+        button("Abrir PDF", first, v -> selectFile());
+        button("Modo escuro", first, v -> {
+            dark = !dark;
+            view.invalidate();
+        });
+        controlsPanel.addView(first, new LinearLayout.LayoutParams(-1, -2));
+
         pageLabel = new TextView(this);
-        pageLabel.setTextColor(Color.WHITE);
+        pageLabel.setTextColor(Color.LTGRAY);
         pageLabel.setGravity(Gravity.CENTER);
-        pageLabel.setText("Abra um PDF");
-        bottom.addView(pageLabel, new LinearLayout.LayoutParams(0, -2, 1));
-        button("Próxima ▶", bottom, v -> changePage(1));
-        root.addView(bottom);
+        pageLabel.setTextSize(16);
+        pageLabel.setText("Selecione um PDF");
+        controlsPanel.addView(pageLabel, new LinearLayout.LayoutParams(-1, dp(38)));
+
+        LinearLayout second = new LinearLayout(this);
+        second.setGravity(Gravity.CENTER);
+        button("◀ Anterior", second, v -> changePage(-1));
+        button("Próxima ▶", second, v -> changePage(1));
+        controlsPanel.addView(second, new LinearLayout.LayoutParams(-1, -2));
+
+        Button hide = new Button(this);
+        hide.setText("Ocultar controles e ler");
+        hide.setAllCaps(false);
+        hide.setTextColor(Color.WHITE);
+        hide.setOnClickListener(v -> setControls(false));
+        controlsPanel.addView(hide, new LinearLayout.LayoutParams(-1, dp(54)));
+
+        FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER);
+        panelParams.leftMargin = dp(16);
+        panelParams.rightMargin = dp(16);
+        root.addView(controlsPanel, panelParams);
+
+        showControlsButton = new Button(this);
+        showControlsButton.setText("☰");
+        showControlsButton.setTextSize(22);
+        showControlsButton.setContentDescription("Mostrar controles do leitor");
+        showControlsButton.setTextColor(Color.rgb(18, 25, 39));
+        showControlsButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(221, 231, 249)));
+        showControlsButton.setOnClickListener(v -> setControls(true));
+        FrameLayout.LayoutParams compactParams = new FrameLayout.LayoutParams(
+                dp(60), dp(60), Gravity.CENTER_VERTICAL | Gravity.RIGHT);
+        compactParams.rightMargin = dp(10);
+        root.addView(showControlsButton, compactParams);
+        setControls(true);
         setContentView(root);
     }
 
@@ -119,6 +192,7 @@ public class MainActivity extends Activity {
             currentUri = uri;
             pageIndex = 0;
             showPage();
+            setControls(false);
         } catch (Exception e) {
             Toast.makeText(this, "Não foi possível abrir este PDF: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
