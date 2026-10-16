@@ -26,7 +26,9 @@ jobs:
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           "$SDKMANAGER" --version
-          yes | "$SDKMANAGER" --licenses > /dev/null
+          # Use um arquivo de respostas para evitar SIGPIPE do comando yes
+          for i in {1..60}; do echo y; done > "$RUNNER_TEMP/android-license-answers.txt"
+          "$SDKMANAGER" --licenses < "$RUNNER_TEMP/android-license-answers.txt" > /dev/null
           "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 
       - name: Preparar Gradle
