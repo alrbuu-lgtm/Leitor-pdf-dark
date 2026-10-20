@@ -9,7 +9,6 @@ import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.text.TextUtils;
-import com.google.mlkit.nl.translate.DownloadConditions;
 import com.google.mlkit.nl.translate.TranslateLanguage;
 import com.google.mlkit.nl.translate.Translation;
 import com.google.mlkit.nl.translate.Translator;
@@ -79,8 +78,7 @@ public final class VisualPdfTranslator implements AutoCloseable {
         }
         final int request = ++generation;
         callback.onStatus("Preparando modelo EN → PT…");
-        DownloadConditions conditions = new DownloadConditions.Builder().build();
-        translator.downloadModelIfNeeded(conditions)
+        translator.downloadModelIfNeeded()
                 .addOnSuccessListener(unused -> {
                     if (active(request)) recognizePage(page, request, callback);
                 })
