@@ -37,6 +37,10 @@ public class MainActivity extends Activity {
     private boolean dark = true;
     private Uri currentUri;
     private boolean landscapeMode;
+    private boolean translatedMode = false;
+    private Bitmap translatedBitmap;
+    private VisualPdfTranslator visualTranslator;
+    private Button translationButton;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -45,6 +49,8 @@ public class MainActivity extends Activity {
         buildUi();
         if (state != null) {
             dark = state.getBoolean("dark_mode", true);
+            translatedMode = state.getBoolean("translated_mode", false);
+            updateTranslationButton();
             String saved = state.getString("open_pdf_uri");
             if (saved != null) open(Uri.parse(saved), state.getInt("pdf_page", 0));
         }
@@ -60,6 +66,7 @@ public class MainActivity extends Activity {
         if (currentUri != null) outState.putString("open_pdf_uri", currentUri.toString());
         outState.putInt("pdf_page", pageIndex);
         outState.putBoolean("dark_mode", dark);
+        outState.putBoolean("translated_mode", translatedMode);
         super.onSaveInstanceState(outState);
     }
 
@@ -176,6 +183,11 @@ public class MainActivity extends Activity {
         button("Próxima ▶", second, v -> changePage(1));
         controlsPanel.addView(second, new LinearLayout.LayoutParams(-1, -2));
 
+        LinearLayout translateRow = new LinearLayout(this);
+        translateRow.setGravity(Gravity.CENTER);
+        translationButton = button("Traduzir EN → PT", translateRow, v -> toggleVisualTranslation());
+        controlsPanel.addView(translateRow, new LinearLayout.LayoutParams(-1, -2));
+
         Button hide = new Button(this);
         hide.setText("Ocultar controles e ler");
         hide.setAllCaps(false);
@@ -204,6 +216,76 @@ public class MainActivity extends Activity {
         root.addView(showControlsButton, compactParams);
         setControls(true);
         setContentView(root);
+    }
+
+    private void updateTranslationButton() {
+        if (translationButton != null) {
+            translationButton.setText(translatedMode ? "Ver PDF original" : "Traduzir página EN → PT");
+        }
+    }
+
+    private void cancelVisualTranslation() {
+        if (visualTranslator != null) visualTranslator.cancel();
+        if (translatedBitmap != null) {
+            translatedBitmap.recycle();
+            translatedBitmap = null;
+        }
+        if (view != null) view.invalidate();
+    }
+
+    private void toggleVisualTranslation() {
+        if (renderer == null || bitmap == null) {
+            Toast.makeText(this, "Abra um PDF antes de traduzir.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        translatedMode = !translatedMode;
+        updateTranslationButton();
+        if (translatedMode) {
+            startVisualTranslation();
+        } else {
+            cancelVisualTranslation();
+            pageLabel.setText((pageIndex + 1) + " / " + renderer.getPageCount());
+        }
+        setControls(false);
+    }
+
+    private void startVisualTranslation() {
+        if (!translatedMode || bitmap == null || renderer == null) return;
+        if (visualTranslator == null) visualTranslator = new VisualPdfTranslator();
+        final int requestedPage = pageIndex;
+        final Bitmap requestedBitmap = bitmap;
+        Toast.makeText(this, "Traduzindo a página. O primeiro uso precisa baixar o modelo EN–PT.",
+                Toast.LENGTH_LONG).show();
+        visualTranslator.translatePage(requestedBitmap, new VisualPdfTranslator.Callback() {
+            @Override public void onStatus(String status) {
+                if (translatedMode && pageIndex == requestedPage && bitmap == requestedBitmap) {
+                    pageLabel.setText(status);
+                }
+            }
+            @Override public void onTranslated(Bitmap result, int blocks) {
+                if (!translatedMode || renderer == null || pageIndex != requestedPage
+                        || bitmap != requestedBitmap) {
+                    if (!result.isRecycled()) result.recycle();
+                    return;
+                }
+                if (translatedBitmap != null) translatedBitmap.recycle();
+                translatedBitmap = result;
+                view.invalidate();
+                pageLabel.setText((pageIndex + 1) + " / " + renderer.getPageCount() + " · PT");
+                Toast.makeText(MainActivity.this,
+                        "Tradução visual pronta (" + blocks + " blocos). Toque no PDF para abrir os controles.",
+                        Toast.LENGTH_LONG).show();
+            }
+            @Override public void onError(String message) {
+                if (translatedMode && renderer != null && pageIndex == requestedPage
+                        && bitmap == requestedBitmap) {
+                    translatedMode = false;
+                    updateTranslationButton();
+                    pageLabel.setText((pageIndex + 1) + " / " + renderer.getPageCount());
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            }
+        });
     }
 
     private void selectFile() {
@@ -263,6 +345,7 @@ public class MainActivity extends Activity {
     }
 
     private void showPage() {
+        cancelVisualTranslation();
         if (renderer == null || renderer.getPageCount() == 0) return;
         PdfRenderer.Page p = null;
         try {
@@ -284,6 +367,7 @@ public class MainActivity extends Activity {
             view.reset();
             if (previous != null && !previous.isRecycled()) previous.recycle();
             pageLabel.setText((pageIndex+1) + " / " + renderer.getPageCount());
+            if (translatedMode) startVisualTranslation();
         } catch (Exception e) {
             Toast.makeText(this, "Erro ao renderizar página", Toast.LENGTH_SHORT).show();
         } finally {
@@ -292,6 +376,7 @@ public class MainActivity extends Activity {
     }
 
     private void closePdf() {
+        cancelVisualTranslation();
         view.reset();
         if (bitmap != null) { bitmap.recycle(); bitmap = null; }
         if (renderer != null) { renderer.close(); renderer = null; }
@@ -303,6 +388,10 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         closePdf();
+        if (visualTranslator != null) {
+            visualTranslator.close();
+            visualTranslator = null;
+        }
         super.onDestroy();
     }
 
@@ -350,7 +439,9 @@ public class MainActivity extends Activity {
         }
         @Override protected void onDraw(Canvas canvas) {
             canvas.drawColor(Color.rgb(30,32,37));
-            if (bitmap == null || bitmap.isRecycled()) {
+            Bitmap displayBitmap = translatedMode && translatedBitmap != null && !translatedBitmap.isRecycled()
+                    ? translatedBitmap : bitmap;
+            if (displayBitmap == null || displayBitmap.isRecycled()) {
                 Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
                 text.setColor(Color.LTGRAY);
                 text.setTextSize(42);
@@ -362,7 +453,7 @@ public class MainActivity extends Activity {
             RectF rect = new RectF((getWidth()-w)/2+dx, (getHeight()-h)/2+dy,
                     (getWidth()+w)/2+dx, (getHeight()+h)/2+dy);
             paint.setColorFilter(dark ? invert : null);
-            canvas.drawBitmap(bitmap, null, rect, paint);
+            canvas.drawBitmap(displayBitmap, null, rect, paint);
             paint.setColorFilter(null);
         }
         @Override public boolean onTouchEvent(MotionEvent event) {
