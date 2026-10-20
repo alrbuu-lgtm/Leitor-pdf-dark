@@ -16,6 +16,8 @@ import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
+import android.widget.OverScroller;
 import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.WindowManager;
@@ -33,6 +35,7 @@ public class MainActivity extends Activity {
     private Bitmap bitmap;
     private PdfView view;
     private TextView pageLabel;
+    private TextView floatingPageIndicator;
     private int pageIndex = 0;
     private boolean dark = true;
     private Uri currentUri;
@@ -142,6 +145,26 @@ public class MainActivity extends Activity {
 
         view = new PdfView();
         root.addView(view, new FrameLayout.LayoutParams(-1, -1));
+
+        // Indicação sempre visível, inclusive com os controles recolhidos.
+        floatingPageIndicator = new TextView(this);
+        floatingPageIndicator.setTextColor(Color.WHITE);
+        floatingPageIndicator.setTextSize(14f);
+        floatingPageIndicator.setGravity(Gravity.CENTER);
+        floatingPageIndicator.setPadding(dp(15), dp(7), dp(15), dp(7));
+        android.graphics.drawable.GradientDrawable indicatorBg =
+                new android.graphics.drawable.GradientDrawable();
+        indicatorBg.setColor(Color.argb(220, 26, 30, 38));
+        indicatorBg.setCornerRadius(dp(30));
+        floatingPageIndicator.setBackground(indicatorBg);
+        floatingPageIndicator.setElevation(dp(5));
+        floatingPageIndicator.setVisibility(View.GONE);
+        FrameLayout.LayoutParams numberParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        numberParams.topMargin = dp(17);
+        root.addView(floatingPageIndicator, numberParams);
 
         controlsPanel = new LinearLayout(this);
         controlsPanel.setOrientation(LinearLayout.VERTICAL);
@@ -335,43 +358,82 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void changePage(int by) {
-        if (renderer == null) return;
-        int candidate = pageIndex + by;
-        if (candidate >= 0 && candidate < renderer.getPageCount()) {
-            pageIndex = candidate;
-            showPage();
+    private void updatePageIndicator() {
+        if (renderer == null || renderer.getPageCount() == 0) {
+            if (floatingPageIndicator != null) floatingPageIndicator.setVisibility(View.GONE);
+            return;
+        }
+        String counter = (pageIndex + 1) + " / " + renderer.getPageCount();
+        if (floatingPageIndicator != null) {
+            floatingPageIndicator.setText(counter);
+            floatingPageIndicator.setVisibility(View.VISIBLE);
+        }
+        if (pageLabel != null) {
+            pageLabel.setText(counter + (translatedMode ? " · PT" : ""));
         }
     }
 
-    private void showPage() {
+    private void changePage(int by) {
+        if (renderer == null) return;
+        int candidate = pageIndex + by;
+        if (candidate < 0 || candidate >= renderer.getPageCount()) return;
+        pageIndex = candidate;
+        showPage(false);
+    }
+
+    // Visualização contínua usa uma miniatura da página vizinha. Não guarda o
+    // documento inteiro na memória, mesmo quando contém centenas de páginas.
+    private Bitmap renderPdfPage(int index, boolean preview) throws Exception {
+        if (renderer == null || index < 0 || index >= renderer.getPageCount()) return null;
+        PdfRenderer.Page pdf = renderer.openPage(index);
+        try {
+            int targetWidth = preview
+                    ? Math.min(1000, Math.max(600, getResources().getDisplayMetrics().widthPixels))
+                    : Math.min(2200, Math.max(900, getResources().getDisplayMetrics().widthPixels * 2));
+            float ratio = targetWidth / (float) pdf.getWidth();
+            int w = Math.max(1, Math.round(pdf.getWidth() * ratio));
+            int h = Math.max(1, Math.round(pdf.getHeight() * ratio));
+            long limit = preview ? 3000000L : 12000000L;
+            long pixels = (long) w * h;
+            if (pixels > limit) {
+                ratio *= Math.sqrt(limit / (double) pixels);
+                w = Math.max(1, Math.round(pdf.getWidth() * ratio));
+                h = Math.max(1, Math.round(pdf.getHeight() * ratio));
+            }
+            Bitmap img = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            img.eraseColor(Color.WHITE);
+            try {
+                pdf.render(img, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                return img;
+            } catch (Exception e) {
+                img.recycle();
+                throw e;
+            }
+        } finally {
+            pdf.close();
+        }
+    }
+
+    private void showPage() { showPage(false); }
+
+    private void showPage(boolean continuousScroll) {
         cancelVisualTranslation();
         if (renderer == null || renderer.getPageCount() == 0) return;
-        PdfRenderer.Page p = null;
         try {
-            p = renderer.openPage(pageIndex);
-            int targetWidth = Math.min(2200, Math.max(900, getResources().getDisplayMetrics().widthPixels * 2));
-            float ratio = targetWidth / (float) p.getWidth();
-            int targetHeight = Math.max(1, Math.round(p.getHeight() * ratio));
-            long pixels = (long) targetWidth * targetHeight;
-            if (pixels > 12000000L) {
-                ratio *= Math.sqrt(12000000.0 / pixels);
-                targetWidth = Math.max(1, Math.round(p.getWidth() * ratio));
-                targetHeight = Math.max(1, Math.round(p.getHeight() * ratio));
-            }
-            Bitmap updated = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
-            updated.eraseColor(Color.WHITE);
-            p.render(updated, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+            Bitmap updated = renderPdfPage(pageIndex, false);
+            if (updated == null) return;
+            // Elimina as miniaturas antigas antes de reciclar o bitmap principal.
+            view.clearPreviews();
             Bitmap previous = bitmap;
             bitmap = updated;
-            view.reset();
+            if (!continuousScroll) view.reset();
             if (previous != null && !previous.isRecycled()) previous.recycle();
-            pageLabel.setText((pageIndex+1) + " / " + renderer.getPageCount());
+            updatePageIndicator();
+            view.invalidate();
             if (translatedMode) startVisualTranslation();
         } catch (Exception e) {
-            Toast.makeText(this, "Erro ao renderizar página", Toast.LENGTH_SHORT).show();
-        } finally {
-            if (p != null) p.close();
+            Toast.makeText(this, "Não foi possível carregar a página: " + e.getMessage(),
+                    Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -396,90 +458,254 @@ public class MainActivity extends Activity {
     }
 
     private class PdfView extends View {
+        private static final float MAX_ZOOM = 4f;
+        private final int gap = dp(12);
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final ColorMatrixColorFilter invert;
-        private final ScaleGestureDetector detector;
+        private final ScaleGestureDetector scaleDetector;
+        private final OverScroller scroller = new OverScroller(MainActivity.this);
+        private VelocityTracker velocityTracker;
+        private Bitmap previousPreview, nextPreview;
+        private int previousPreviewIndex = -1, nextPreviewIndex = -1;
         private float zoom = 1f;
-        private float dx = 0f, dy = 0f;
-        private float lastX, lastY;
-        private float downX, downY;
-        private boolean dragging = false;
+        private float horizontalOffset = 0f;
+        private float pageOffset = 0f;
+        private float lastX, lastY, downX, downY;
+        private boolean dragging;
+        private int lastFlingY;
+
         PdfView() {
             super(MainActivity.this);
-            ColorMatrix matrix = new ColorMatrix(new float[] {
-                -1,0,0,0,255, 0,-1,0,0,255, 0,0,-1,0,255, 0,0,0,1,0
-            });
-            invert = new ColorMatrixColorFilter(matrix);
-            detector = new ScaleGestureDetector(MainActivity.this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            invert = new ColorMatrixColorFilter(new ColorMatrix(new float[] {
+                    -1,0,0,0,255, 0,-1,0,0,255, 0,0,-1,0,255, 0,0,0,1,0
+            }));
+            scaleDetector = new ScaleGestureDetector(MainActivity.this,
+                    new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 @Override public boolean onScale(ScaleGestureDetector d) {
-                    zoom = Math.max(1f, Math.min(5f, zoom * d.getScaleFactor()));
-                    constrain();
+                    if (bitmap == null) return false;
+                    float oldZoom = zoom;
+                    zoom = Math.max(1f, Math.min(MAX_ZOOM, zoom * d.getScaleFactor()));
+                    float k = zoom / oldZoom;
+                    pageOffset = (pageOffset + d.getFocusY()) * k - d.getFocusY();
+                    horizontalOffset = (horizontalOffset - (d.getFocusX() - getWidth() / 2f)) * k
+                            + (d.getFocusX() - getWidth() / 2f);
+                    boundHorizontal();
                     invalidate();
                     return true;
                 }
             });
         }
-        void reset() { zoom = 1f; dx = dy = 0; invalidate(); }
+
+        void reset() {
+            scroller.forceFinished(true);
+            zoom = 1f;
+            horizontalOffset = 0f;
+            pageOffset = 0f;
+            clearPreviews();
+            invalidate();
+        }
+
+        void clearPreviews() {
+            if (previousPreview != null && !previousPreview.isRecycled()) previousPreview.recycle();
+            if (nextPreview != null && !nextPreview.isRecycled()) nextPreview.recycle();
+            previousPreview = null; nextPreview = null;
+            previousPreviewIndex = -1; nextPreviewIndex = -1;
+        }
 
         @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
             super.onSizeChanged(width, height, oldWidth, oldHeight);
-            constrain();
+            if (oldWidth > 0 && width > 0) {
+                pageOffset *= (float) width / oldWidth;
+                horizontalOffset *= (float) width / oldWidth;
+            }
+            boundHorizontal();
         }
-        private float fittedWidth() {
-            if (bitmap == null) return 0;
-            return Math.min(getWidth() / (float) bitmap.getWidth(), getHeight() / (float) bitmap.getHeight()) * bitmap.getWidth() * zoom;
+
+        private float pageHeight(Bitmap b) {
+            if (b == null || b.isRecycled() || b.getWidth() == 0) return 0f;
+            return getWidth() * zoom * b.getHeight() / (float) b.getWidth();
         }
-        private float fittedHeight() {
-            if (bitmap == null) return 0;
-            return Math.min(getWidth() / (float) bitmap.getWidth(), getHeight() / (float) bitmap.getHeight()) * bitmap.getHeight() * zoom;
+
+        private void boundHorizontal() {
+            float range = Math.max(0f, (getWidth() * zoom - getWidth()) / 2f);
+            horizontalOffset = Math.max(-range, Math.min(range, horizontalOffset));
         }
-        private void constrain() {
-            dx = Math.max(-Math.max(0, (fittedWidth()-getWidth())/2), Math.min(Math.max(0, (fittedWidth()-getWidth())/2), dx));
-            dy = Math.max(-Math.max(0, (fittedHeight()-getHeight())/2), Math.min(Math.max(0, (fittedHeight()-getHeight())/2), dy));
+
+        private Bitmap preview(int index, boolean before) {
+            if (renderer == null || index < 0 || index >= renderer.getPageCount()) return null;
+            Bitmap saved = before ? previousPreview : nextPreview;
+            int savedIndex = before ? previousPreviewIndex : nextPreviewIndex;
+            if (index == savedIndex && saved != null && !saved.isRecycled()) return saved;
+            try {
+                Bitmap rendered = renderPdfPage(index, true);
+                if (before) {
+                    if (previousPreview != null && !previousPreview.isRecycled()) previousPreview.recycle();
+                    previousPreview = rendered;
+                    previousPreviewIndex = index;
+                } else {
+                    if (nextPreview != null && !nextPreview.isRecycled()) nextPreview.recycle();
+                    nextPreview = rendered;
+                    nextPreviewIndex = index;
+                }
+                return rendered;
+            } catch (Exception ex) {
+                return null;
+            }
         }
+
+        private void drawPage(Canvas canvas, Bitmap b, float top) {
+            if (b == null || b.isRecycled()) return;
+            float w = getWidth() * zoom, h = pageHeight(b);
+            if (top >= getHeight() || top + h <= 0f) return;
+            float left = (getWidth() - w) / 2f + horizontalOffset;
+            canvas.drawBitmap(b, null, new RectF(left, top, left + w, top + h), paint);
+        }
+
         @Override protected void onDraw(Canvas canvas) {
-            canvas.drawColor(Color.rgb(30,32,37));
-            Bitmap displayBitmap = translatedMode && translatedBitmap != null && !translatedBitmap.isRecycled()
-                    ? translatedBitmap : bitmap;
-            if (displayBitmap == null || displayBitmap.isRecycled()) {
-                Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
-                text.setColor(Color.LTGRAY);
-                text.setTextSize(42);
-                text.setTextAlign(Paint.Align.CENTER);
-                canvas.drawText("Toque em Abrir PDF", getWidth()/2f, getHeight()/2f, text);
+            canvas.drawColor(Color.rgb(30, 32, 37));
+            if (bitmap == null || bitmap.isRecycled()) {
+                Paint info = new Paint(Paint.ANTI_ALIAS_FLAG);
+                info.setColor(Color.LTGRAY);
+                info.setTextSize(dp(18));
+                info.setTextAlign(Paint.Align.CENTER);
+                canvas.drawText("Toque em Abrir PDF", getWidth()/2f, getHeight()/2f, info);
                 return;
             }
-            float w = fittedWidth(), h = fittedHeight();
-            RectF rect = new RectF((getWidth()-w)/2+dx, (getHeight()-h)/2+dy,
-                    (getWidth()+w)/2+dx, (getHeight()+h)/2+dy);
             paint.setColorFilter(dark ? invert : null);
-            canvas.drawBitmap(displayBitmap, null, rect, paint);
+            Bitmap displayed = translatedMode && translatedBitmap != null
+                    && !translatedBitmap.isRecycled() ? translatedBitmap : bitmap;
+            float currentTop = -pageOffset;
+            float currentH = pageHeight(bitmap);
+
+            // As páginas vizinhas já aparecem antes de a anterior sair da tela.
+            if (renderer != null && pageIndex > 0 && currentTop > 0) {
+                Bitmap prev = preview(pageIndex - 1, true);
+                if (prev != null) drawPage(canvas, prev, currentTop - pageHeight(prev) - gap);
+            }
+            drawPage(canvas, displayed, currentTop);
+            if (renderer != null && pageIndex + 1 < renderer.getPageCount()
+                    && currentTop + currentH + gap < getHeight()) {
+                Bitmap next = preview(pageIndex + 1, false);
+                if (next != null) drawPage(canvas, next, currentTop + currentH + gap);
+            }
             paint.setColorFilter(null);
         }
+
+        /**
+         * Desloca o documento sem trocar de tela. Quando o centro da tela passa
+         * à página seguinte, atualiza o índice e carrega uma nova janela de
+         * 3 páginas (anterior, atual e próxima).
+         */
+        private void scrollByDistance(float amount) {
+            if (renderer == null || bitmap == null || getWidth() <= 0) return;
+            pageOffset += amount;
+            int attempts = 0;
+            while (attempts++ < 5) {
+                float currentH = pageHeight(bitmap);
+                if (pageOffset + getHeight() / 2f >= currentH + gap
+                        && pageIndex < renderer.getPageCount() - 1) {
+                    pageOffset -= currentH + gap;
+                    pageIndex++;
+                    showPage(true);
+                    continue;
+                }
+                if (pageOffset + getHeight() / 2f < 0 && pageIndex > 0) {
+                    Bitmap prev = preview(pageIndex - 1, true);
+                    float previousH = pageHeight(prev);
+                    if (previousH <= 0) break;
+                    pageOffset += previousH + gap;
+                    pageIndex--;
+                    showPage(true);
+                    continue;
+                }
+                break;
+            }
+            if (pageIndex == 0) pageOffset = Math.max(0f, pageOffset);
+            if (pageIndex == renderer.getPageCount() - 1) {
+                float end = Math.max(0f, pageHeight(bitmap) - getHeight());
+                pageOffset = Math.min(pageOffset, end);
+            }
+            invalidate();
+        }
+
+        @Override public void computeScroll() {
+            if (scroller.computeScrollOffset()) {
+                int nextY = scroller.getCurrY();
+                scrollByDistance(nextY - lastFlingY);
+                lastFlingY = nextY;
+                postInvalidateOnAnimation();
+            }
+        }
+
+        private void releaseVelocity() {
+            if (velocityTracker != null) {
+                velocityTracker.recycle();
+                velocityTracker = null;
+            }
+        }
+
         @Override public boolean onTouchEvent(MotionEvent event) {
-            detector.onTouchEvent(event);
+            scaleDetector.onTouchEvent(event);
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    lastX = downX = event.getX(); lastY = downY = event.getY();
+                    scroller.forceFinished(true);
+                    releaseVelocity();
+                    velocityTracker = VelocityTracker.obtain();
+                    velocityTracker.addMovement(event);
+                    lastX = downX = event.getX();
+                    lastY = downY = event.getY();
                     dragging = false;
                     return true;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    dragging = true;
+                    return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (event.getPointerCount() == 1 && !detector.isInProgress()) {
-                        float mx = event.getX()-lastX, my = event.getY()-lastY;
-                        if (Math.abs(event.getX()-downX)>12 || Math.abs(event.getY()-downY)>12) dragging=true;
-                        if (zoom > 1f) { dx+=mx; dy+=my; constrain(); invalidate(); }
-                        lastX=event.getX(); lastY=event.getY();
+                    if (velocityTracker != null) velocityTracker.addMovement(event);
+                    if (event.getPointerCount() == 1 && !scaleDetector.isInProgress()) {
+                        float mx = event.getX() - lastX;
+                        float my = event.getY() - lastY;
+                        if (Math.abs(event.getX()-downX) > dp(8)
+                                || Math.abs(event.getY()-downY) > dp(8)) dragging = true;
+                        if (zoom > 1f) {
+                            horizontalOffset += mx;
+                            boundHorizontal();
+                        }
+                        scrollByDistance(-my);
+                        lastX = event.getX();
+                        lastY = event.getY();
+                    }
+                    return true;
+                case MotionEvent.ACTION_POINTER_UP:
+                    if (event.getPointerCount() > 1) {
+                        int remaining = event.getActionIndex() == 0 ? 1 : 0;
+                        lastX = downX = event.getX(remaining);
+                        lastY = downY = event.getY(remaining);
+                        dragging = true;
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
-                    float horizontal = event.getX()-downX;
-                    if (zoom==1f && dragging && Math.abs(horizontal)>85 && Math.abs(horizontal)>Math.abs(event.getY()-downY)*1.4f)
-                        changePage(horizontal<0?1:-1);
-                    else if (!dragging) performClick();
+                    if (velocityTracker != null) {
+                        velocityTracker.addMovement(event);
+                        velocityTracker.computeCurrentVelocity(1000, 6500);
+                        float speed = velocityTracker.getYVelocity();
+                        if (dragging && !scaleDetector.isInProgress() && Math.abs(speed) > 550f) {
+                            scroller.fling(0, 0, 0, (int) -speed,
+                                    0, 0, -300000, 300000);
+                            lastFlingY = 0;
+                            postInvalidateOnAnimation();
+                        }
+                    }
+                    if (!dragging) performClick();
+                    releaseVelocity();
                     return true;
-                default: return true;
+                case MotionEvent.ACTION_CANCEL:
+                    releaseVelocity();
+                    return true;
+                default:
+                    return true;
             }
         }
+
         @Override public boolean performClick() {
             super.performClick();
             if (landscapeMode && renderer != null) {
