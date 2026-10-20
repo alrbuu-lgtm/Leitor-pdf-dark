@@ -18,6 +18,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -35,16 +36,67 @@ public class MainActivity extends Activity {
     private int pageIndex = 0;
     private boolean dark = true;
     private Uri currentUri;
+    private boolean landscapeMode;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().setStatusBarColor(Color.rgb(16,18,23));
         getWindow().setNavigationBarColor(Color.rgb(16,18,23));
         buildUi();
+        if (state != null) {
+            dark = state.getBoolean("dark_mode", true);
+            String saved = state.getString("open_pdf_uri");
+            if (saved != null) open(Uri.parse(saved), state.getInt("pdf_page", 0));
+        }
         Intent initial = getIntent();
-        if (initial != null && Intent.ACTION_VIEW.equals(initial.getAction()) && initial.getData() != null) {
+        if (renderer == null && initial != null
+                && Intent.ACTION_VIEW.equals(initial.getAction()) && initial.getData() != null) {
             open(initial.getData());
         }
+        applyOrientation(getResources().getConfiguration());
+    }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        if (currentUri != null) outState.putString("open_pdf_uri", currentUri.toString());
+        outState.putInt("pdf_page", pageIndex);
+        outState.putBoolean("dark_mode", dark);
+        super.onSaveInstanceState(outState);
+    }
+
+    @Override public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // Sem recriar Activity: mantém o PdfRenderer, a página e o zoom.
+        applyOrientation(newConfig);
+    }
+
+    private void setLandscapeSystemBars() {
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+    }
+
+    private void applyOrientation(Configuration config) {
+        landscapeMode = config.orientation == Configuration.ORIENTATION_LANDSCAPE;
+        if (landscapeMode) {
+            getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            setLandscapeSystemBars();
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        }
+        // PDF aberto: ler sem painel. Um toque no PDF revela controles em paisagem.
+        setControls(renderer == null);
+        if (view != null) view.invalidate();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && landscapeMode) setLandscapeSystemBars();
     }
 
     private int dp(int n) {
@@ -73,7 +125,8 @@ public class MainActivity extends Activity {
     private void setControls(boolean expanded) {
         if (controlsPanel == null || showControlsButton == null) return;
         controlsPanel.setVisibility(expanded ? View.VISIBLE : View.GONE);
-        showControlsButton.setVisibility(expanded ? View.GONE : View.VISIBLE);
+        // Em modo paisagem o botão não ocupa espaço da página; toque no PDF para abrir.
+        showControlsButton.setVisibility(expanded || landscapeMode ? View.GONE : View.VISIBLE);
     }
 
     private void buildUi() {
@@ -179,7 +232,9 @@ public class MainActivity extends Activity {
             open(intent.getData());
     }
 
-    private void open(Uri uri) {
+    private void open(Uri uri) { open(uri, 0); }
+
+    private void open(Uri uri, int restoredPage) {
         try {
             ParcelFileDescriptor nextDescriptor = getContentResolver().openFileDescriptor(uri, "r");
             if (nextDescriptor == null) throw new IOException("Documento indisponível");
@@ -190,7 +245,7 @@ public class MainActivity extends Activity {
             descriptor = nextDescriptor;
             renderer = nextRenderer;
             currentUri = uri;
-            pageIndex = 0;
+            pageIndex = Math.max(0, Math.min(restoredPage, renderer.getPageCount() - 1));
             showPage();
             setControls(false);
         } catch (Exception e) {
@@ -276,6 +331,11 @@ public class MainActivity extends Activity {
             });
         }
         void reset() { zoom = 1f; dx = dy = 0; invalidate(); }
+
+        @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            super.onSizeChanged(width, height, oldWidth, oldHeight);
+            constrain();
+        }
         private float fittedWidth() {
             if (bitmap == null) return 0;
             return Math.min(getWidth() / (float) bitmap.getWidth(), getHeight() / (float) bitmap.getHeight()) * bitmap.getWidth() * zoom;
@@ -329,6 +389,12 @@ public class MainActivity extends Activity {
                 default: return true;
             }
         }
-        @Override public boolean performClick() { super.performClick(); return true; }
+        @Override public boolean performClick() {
+            super.performClick();
+            if (landscapeMode && renderer != null) {
+                setControls(controlsPanel.getVisibility() != View.VISIBLE);
+            }
+            return true;
+        }
     }
 }
